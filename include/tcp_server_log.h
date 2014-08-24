@@ -24,7 +24,7 @@
 /**
  * Enable log system.
  */
-#define TCPS_LOG_ENABLE
+/*#define TCPS_LOG_ENABLE*/
 
 /**
  * Enable modules log.
@@ -34,6 +34,18 @@
 #define TCPS_LOG_MOD_SRV_ENABLE
 #define TCPS_LOG_MOD_POOL_ENABLE
 #endif /* TCPS_LOG_ENABLE */
+
+/**
+ * Log levels.
+ */
+#define TCPS_LOG_EMERG   (1<<0) /* System is unusable. */
+#define TCPS_LOG_ALERT   (1<<1) /* Action must be taken immediately. */
+#define TCPS_LOG_CRIT    (1<<2) /* Critical conditions. */
+#define TCPS_LOG_ERR     (1<<3) /* Error conditions. */
+#define TCPS_LOG_WARNING (1<<4) /* Warning conditions. */
+#define TCPS_LOG_NOTICE  (1<<5) /* Normal, but significant, condition. */
+#define TCPS_LOG_INFO    (1<<6) /* Informational message. */
+#define TCPS_LOG_DEBUG   (1<<7) /* Debug-level message. */
 
 /**
  * Current log level.
@@ -49,36 +61,24 @@
     TCPS_LOG_DEBUG
 
 /**
- * Log levels.
- */
-#define TCPS_LOG_EMERG   (0<<1) /* System is unusable. */
-#define TCPS_LOG_ALERT   (0<<2) /* Action must be taken immediately. */
-#define TCPS_LOG_CRIT    (0<<3) /* Critical conditions. */
-#define TCPS_LOG_ERR     (0<<4) /* Error conditions. */
-#define TCPS_LOG_WARNING (0<<5) /* Warning conditions. */
-#define TCPS_LOG_NOTICE  (0<<6) /* Normal, but significant, condition. */
-#define TCPS_LOG_INFO    (0<<7) /* Informational message. */
-#define TCPS_LOG_DEBUG   (0<<8) /* Debug-level message. */
-
-/**
  * Log message helpers.
  * @param[in] lvl Level.
  * @param[in] msg Message.
  */
 #ifdef TCPS_LOG_MOD_MAIN_ENABLE
-#define LOG_MAIN(lvl, msg) { if(lvl&(TCPS_LOG_LVL)) { printf msg; } }
+#define LOG_MAIN(lvl, msg) { if(lvl&(TCPS_LOG_LVL)) { printf msg; printf("\n"); } }
 #else /* TCPS_LOG_MOD_MAIN_ENABLE */
 #define LOG_MAIN(lvl, msg)
 #endif /* TCPS_LOG_MOD_MAIN_ENABLE */
 
 #ifdef TCPS_LOG_MOD_SRV_ENABLE
-#define LOG_SRV(lvl, msg) { if(lvl&(TCPS_LOG_LVL)) { printf msg; } }
+#define LOG_SRV(lvl, msg) { if(lvl&(TCPS_LOG_LVL)) { printf msg; printf("\n"); } }
 #else /* TCPS_LOG_MOD_SRV_ENABLE */
 #define LOG_SRV(lvl, msg)
 #endif /* TCPS_LOG_MOD_SRV_ENABLE */
 
 #ifdef TCPS_LOG_MOD_POOL_ENABLE
-#define LOG_POOL(lvl, msg) { if(lvl&(TCPS_LOG_LVL)) { printf msg; } }
+#define LOG_POOL(lvl, msg) { if(lvl&(TCPS_LOG_LVL)) { printf msg; printf("\n"); } }
 #else /* TCPS_LOG_MOD_POOL_ENABLE */
 #define LOG_POOL(lvl, msg)
 #endif /* TCPS_LOG_MOD_POOL_ENABLE */

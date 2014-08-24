@@ -288,14 +288,14 @@ void tcps_close(void)
     /* Close processes controller. */
     if(srv.mptr != NULL) {
         LOG_SRV(TCPS_LOG_DEBUG, ("Closing processes controller..."));
+        rc = pthread_mutex_destroy(srv.mptr);
+        if(rc != 0) {
+            LOG_SRV(TCPS_LOG_WARNING, ("Unable to destroy pthread mutex: %d", rc));
+        }
         rc = munmap(srv.mptr, sizeof(pthread_mutex_t));
         if(rc != 0) {
             LOG_SRV(TCPS_LOG_WARNING, ("Unable to destroy share memory mapping: "
                                        "%s (%d)", strerror(errno), errno));
-        }
-        rc = pthread_mutex_destroy(srv.mptr);
-        if(rc != 0) {
-            LOG_SRV(TCPS_LOG_WARNING, ("Unable to destroy pthread mutex: %d", rc));
         }
         rc = shm_unlink(TCPS_SM_OBJ_NAME);
         if(rc != 0) {
@@ -326,7 +326,7 @@ static tcps_err_t tcps_lock_init(void)
      * S_IRUSR = User has read permission.
      * S_IWUSR = User has write permission. */
     LOG_SRV(TCPS_LOG_DEBUG, ("Creating shared memory object..."));
-    smfd = shm_open(TCPS_SM_OBJ_NAME, (O_RDWR|O_CREAT|O_EXCL),
+    smfd = shm_open(TCPS_SM_OBJ_NAME, (O_RDWR|O_CREAT|O_EXCL|O_TRUNC),
                     (S_IRUSR|S_IWUSR));
     if(smfd < 0) {
         LOG_SRV(TCPS_LOG_EMERG, ("Could not create share memory object: "
@@ -410,7 +410,6 @@ static tcps_err_t tcps_lock_wait(void)
     int rc;
 
     /* Lock processes controller mutex. */
-    LOG_SRV(TCPS_LOG_DEBUG, ("Trying to get pthread mutex lock..."));
     rc = pthread_mutex_lock(srv.mptr);
     if(rc != 0) {
         LOG_SRV(TCPS_LOG_EMERG, ("Could not lock processes controller mutex: "
@@ -428,7 +427,6 @@ static tcps_err_t tcps_lock_release(void)
     int rc;
 
     /* Unlock processes controller mutex. */
-    LOG_SRV(TCPS_LOG_DEBUG, ("Trying to release pthread mutex lock..."));
     rc = pthread_mutex_unlock(srv.mptr);
     if(rc != 0) {
         LOG_SRV(TCPS_LOG_EMERG, ("Could not unlock processes controller mutex: "
@@ -446,42 +444,51 @@ static void tcps_client_handler(void)
     struct sockaddr_in cliaddr;
     socklen_t          clilen;
     int                connfd;
+    pid_t              pid;
 
     /* Set signal handlers.
      * SIGINT  = When the user types the INTR character (normally C-c).
-     * SIGKILL = Cause immediate program termination.
      * SIGTERM = Generic signal used to cause program termination. */
     signal(SIGINT, NULL);
-    signal(SIGKILL, tcps_client_signal_handler);
     signal(SIGTERM, tcps_client_signal_handler);
+
+    /* Get process indetifier. */
+    pid = getpid();
 
     /* Handle new connections. */
     for(;;) {
         /* Wait for an new incoming connection. */
-        LOG_SRV(TCPS_LOG_NOTICE, ("Waiting for a client request..."));
+        LOG_SRV(TCPS_LOG_NOTICE, ("%d - Waiting for a client request...", pid));
+        tcps_pool_update_process_status(pid, tcps_pool_proc_status_idle);
         tcps_lock_wait();
         clilen = sizeof(cliaddr);
         connfd = accept(srv.listenfd, (struct sockaddr*)&cliaddr, &clilen);
         if(connfd < 0) {
-            LOG_SRV(TCPS_LOG_ERR, ("Unable to establish connection with "
-                                   "client: %s (%d)", strerror(errno), errno));
+            LOG_SRV(TCPS_LOG_ERR, ("%d - Unable to establish connection with "
+                                   "client: %s (%d)", pid,
+                                   strerror(errno), errno));
+            tcps_lock_release();
             continue;
         }
         tcps_lock_release();
-        LOG_SRV(TCPS_LOG_NOTICE, ("Request from client received => "
-                                  "addr: %u port: %u",
+        tcps_pool_update_process_status(pid, tcps_pool_proc_status_working);
+        LOG_SRV(TCPS_LOG_NOTICE, ("%d - Request from client received => "
+                                  "addr: %u port: %u", pid,
                                   cliaddr.sin_addr.s_addr, cliaddr.sin_port));
 
         /* Process request. */
         if(tcps_client_process_request(connfd) != TCPS_OK) {
-            LOG_SRV(TCPS_LOG_ERR, ("Could not process client request"));
+            LOG_SRV(TCPS_LOG_ERR, ("%d - Could not process client request",
+                                   pid));
         }
 
         /* Terminate connection with client. */
-        LOG_SRV(TCPS_LOG_NOTICE, ("Terminating connection with client..."));
+        LOG_SRV(TCPS_LOG_NOTICE, ("%d - Terminating connection with client...",
+                                  pid));
         if(close(connfd) != 0) {
-            LOG_SRV(TCPS_LOG_ERR, ("Unable to close connection with "
-                                   "client: %s (%d)", strerror(errno), errno));
+            LOG_SRV(TCPS_LOG_ERR, ("%d - Unable to close connection with "
+                                   "client: %s (%d)", pid,
+                                   strerror(errno), errno));
         }
     }
 }
@@ -490,9 +497,10 @@ static void tcps_client_handler(void)
 /*----------------------------------------------------------------------------*/
 static void tcps_client_signal_handler(int signo)
 {
+    (void)signo;
     LOG_SRV(TCPS_LOG_NOTICE, ("Signal received: %s (%d). Closing TCP server",
                               strsignal(signo), signo));
-    tcps_close();
+    tcps_pool_update_process_status(getpid(), tcps_pool_proc_status_ninit);
     exit(EXIT_SUCCESS);
 }
 /*----------------------------------------------------------------------------*/
@@ -515,7 +523,8 @@ static ssize_t tcps_client_read(int fd, char* const vptr, ssize_t len)
 
     /* Read. */
     for(n=1 ; n<=len ; ++n) {
-        if((rc = read(fd, &c, 1)) == 1) {
+        rc = read(fd, &c, 1);
+        if(rc == 1) {
             /* Store. */
             vptr[n-1] = c;
             if(c == '\n') {
@@ -589,10 +598,15 @@ static tcps_err_t tcps_client_process_request(int connfd)
     char    outbuf[TCPS_CLIENT_OUT_BUFFER_MAXLEN];
     ssize_t outlen;
     ssize_t writelen;
+    pid_t   pid;
+
+    /* Get process identifier. */
+    pid = getpid();
+    (void)pid;
 
     /* Check received parameters. */
     if(connfd < 0) {
-        LOG_SRV(TCPS_LOG_ERR, ("Invalid received parameters"));
+        LOG_SRV(TCPS_LOG_ERR, ("%d - Invalid received parameters", pid));
         return TCPS_ERR_RECV_PARAMS;
     }
 
@@ -601,27 +615,28 @@ static tcps_err_t tcps_client_process_request(int connfd)
     memset(outbuf, 0, sizeof(outbuf));
 
     /* Read request. */
-    LOG_SRV(TCPS_LOG_DEBUG, ("Reading request..."));
+    LOG_SRV(TCPS_LOG_DEBUG, ("%d - Reading request...", pid));
     inlen = tcps_client_read(connfd, inbuf, TCPS_CLIENT_IN_BUFFER_MAXLEN);
     if(inlen <= 0) {
-        LOG_SRV(TCPS_LOG_ERR, ("Could not read the request"));
+        LOG_SRV(TCPS_LOG_ERR, ("%d - Could not read the request", pid));
         return TCPS_ERR_CLIENT_REQ_READ;
     }
-    LOG_SRV(TCPS_LOG_NOTICE, ("Request read: %d", (int)inlen));
+    LOG_SRV(TCPS_LOG_NOTICE, ("%d - Request read: len=%d", pid, (int)inlen));
 
     /* Process request. */
     /* @todo */
     snprintf(outbuf, TCPS_CLIENT_OUT_BUFFER_MAXLEN, "%s", inbuf);
 
     /* Write response. */
-    LOG_SRV(TCPS_LOG_DEBUG, ("Writing response..."));
+    LOG_SRV(TCPS_LOG_DEBUG, ("%d - Writing response...", pid));
     writelen = strnlen(outbuf, TCPS_CLIENT_IN_BUFFER_MAXLEN);
     outlen   = tcps_client_write(connfd, outbuf, writelen);
     if(outlen != writelen) {
-        LOG_SRV(TCPS_LOG_ERR, ("Could not write the response"));
+        LOG_SRV(TCPS_LOG_ERR, ("%d - Could not write the response", pid));
         return TCPS_ERR_CLIENT_RESP_WRITE;
     }
-    LOG_SRV(TCPS_LOG_NOTICE, ("Response written: %d", (int)outlen));
+    LOG_SRV(TCPS_LOG_NOTICE, ("%d - Response written: len=%d",
+                              pid, (int)outlen));
 
     return TCPS_OK;
 }

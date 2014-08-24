@@ -44,8 +44,8 @@
  * This macro establishes the delta used to determine whether we should
  * fork more processes (to be prepared to handle possible incoming requests)
  * or kill idle (useless) processes.
- * ((current_forked_processes - active_processes) <= delta) fork more processes.
- * ((current_forked_processes - active_processes) > 3*delta) kill processes.
+ * ((current_idle_processes) <= delta) fork more processes.
+ * ((current_idle_processes) > 3*delta) kill processes.
  */
 #define TCPS_POOL_CLIENTS_CONTROL_DELTA 5
 
@@ -132,6 +132,22 @@ static tcps_err_t tcps_pool_kill(void);
 static tcps_err_t tcps_pool_get_pnum(tcps_pool_proc_status_t pstatus,
                                      uchar* pnum);
 
+/**
+ * Set process status.
+ * @param[in] pid Proces identifier.
+ * @param[in] pstatus New process status.
+ */
+static void tcps_pool_set_process_status(pid_t pid,
+                                         tcps_pool_proc_status_t pstatus);
+
+/**
+ * Update pool statistics.
+ * @param[in] prev_status Process previous status.
+ * @param[in] new_status Process new status.
+ */
+static void tcps_pool_update_stats(tcps_pool_proc_status_t prev_status,
+                                   tcps_pool_proc_status_t new_status);
+
 
 /*----------------------------------------------------------------------------*/
 tcps_err_t tcps_pool_init(uchar numpfc, tcps_post_fork_fnc_t pff)
@@ -158,8 +174,7 @@ tcps_err_t tcps_pool_init(uchar numpfc, tcps_post_fork_fnc_t pff)
         return TCPS_ERR_POOL_ALREADY_INIT;
     }
 
-    /* Clean pool data. */
-    memset(&pool, 0, sizeof(tcps_pool_t));
+    /* Initialize pool status. */
     tcps_pool_status = 0;
 
     /* Initialize pool controller. */
@@ -204,9 +219,11 @@ tcps_err_t tcps_pool_update(void)
 
     /* Pool update. */
     tcps_pool_lock_wait();
+    LOG_POOL(TCPS_LOG_INFO, ("POOL STATS: inum=%u ; wnum=%u ; anum=%u\n",
+                             pool->inum, pool->wnum, pool->anum));
 
     /* Do we need to add processes?. */
-    if(pool->inum < TCPS_POOL_CLIENTS_CONTROL_DELTA) {
+    if(pool->inum <= TCPS_POOL_CLIENTS_CONTROL_DELTA) {
         n = (TCPS_POOL_CLIENTS_CONTROL_DELTA-pool->inum);
         for(i=0 ; i<n ; ++i) {
             if(tcps_pool_fork() != TCPS_OK) {
@@ -215,11 +232,11 @@ tcps_err_t tcps_pool_update(void)
         }
 
         /* Do we need to kill processes?. */
-    } else if(pool->anum > (3*TCPS_POOL_CLIENTS_CONTROL_DELTA)) {
+    } else if(pool->inum > (3*TCPS_POOL_CLIENTS_CONTROL_DELTA)) {
         n = (pool->inum-(3*TCPS_POOL_CLIENTS_CONTROL_DELTA));
         for(i=0 ; i<n ; ++i) {
             if(tcps_pool_kill() != TCPS_OK) {
-                LOG_POOL(TCPS_LOG_CRIT, ("Unable to kill process"));
+                LOG_POOL(TCPS_LOG_WARNING, ("Unable to kill process"));
             }
         }
     }
@@ -255,7 +272,8 @@ tcps_err_t tcps_pool_close(void)
                                      strerror(errno), errno));
             continue;
         }
-        --pool->anum;
+        tcps_pool_set_process_status(pool->procs[i].pid,
+                                     tcps_pool_proc_status_ninit);
         LOG_POOL(TCPS_LOG_NOTICE, ("Process %u killed", i));
     }
     tcps_pool_lock_release();
@@ -264,16 +282,16 @@ tcps_err_t tcps_pool_close(void)
 
     /* Close pool controller. */
     LOG_POOL(TCPS_LOG_DEBUG, ("Closing processes controller..."));
+    rc = pthread_mutex_destroy(&pool->mutex);
+    if(rc != 0) {
+        LOG_POOL(TCPS_LOG_WARNING, ("Unable to destroy pthread mutex: %d",
+                                    rc));
+    }
     rc = munmap(pool, sizeof(tcps_pool_t));
     if(rc != 0) {
         LOG_POOL(TCPS_LOG_WARNING, ("Unable to destroy share memory "
                                     "mapping: %s (%d)", strerror(errno),
                                     errno));
-    }
-    rc = pthread_mutex_destroy(&pool->mutex);
-    if(rc != 0) {
-        LOG_POOL(TCPS_LOG_WARNING, ("Unable to destroy pthread mutex: %d",
-                                    rc));
     }
     rc = shm_unlink(TCPS_POOL_SM_OBJ_NAME);
     if(rc != 0) {
@@ -282,7 +300,7 @@ tcps_err_t tcps_pool_close(void)
     }
 
     /* Secure clean. */
-    memset(&pool, 0, sizeof(tcps_pool_t));
+    pool          = NULL;
     tcps_pool_pff = NULL;
 
     return TCPS_OK;
@@ -390,7 +408,6 @@ static tcps_err_t tcps_pool_lock_wait(void)
     int rc;
 
     /* Lock pool controller mutex. */
-    LOG_POOL(TCPS_LOG_DEBUG, ("Trying to get pthread mutex lock..."));
     rc = pthread_mutex_lock(&pool->mutex);
     if(rc != 0) {
         LOG_POOL(TCPS_LOG_EMERG, ("Could not lock pool controller mutex: "
@@ -408,7 +425,6 @@ static tcps_err_t tcps_pool_lock_release(void)
     int rc;
 
     /* Unlock pool controller mutex. */
-    LOG_POOL(TCPS_LOG_DEBUG, ("Trying to release pthread mutex lock..."));
     rc = pthread_mutex_unlock(&pool->mutex);
     if(rc != 0) {
         LOG_POOL(TCPS_LOG_EMERG, ("Could not unlock pool controller mutex: "
@@ -452,10 +468,8 @@ static tcps_err_t tcps_pool_fork(void)
     pid = fork();
     if(pid > 0) { /* Parent. */
         /* Updating pool data. */
-        ++pool->anum;
-        ++pool->inum;
-        pool->procs[n].pid    = pid;
-        pool->procs[n].status = tcps_pool_proc_status_idle;
+        pool->procs[n].pid = pid;
+        tcps_pool_set_process_status(pid, tcps_pool_proc_status_idle);
         LOG_POOL(TCPS_LOG_NOTICE, ("Process %u forked: pid=%d", n, pid));
     } else if(pid == 0) { /* Child. */
         tcps_pool_pff();
@@ -502,10 +516,9 @@ static tcps_err_t tcps_pool_kill(void)
                                  errno));
         return TCPS_ERR_POOL_KILL_FAIL;
     }
-    pool->procs[n].pid    = 0;
-    pool->procs[n].status = tcps_pool_proc_status_ninit;
-    --pool->inum;
-    --pool->anum;
+    tcps_pool_set_process_status(pool->procs[n].pid,
+                                 tcps_pool_proc_status_ninit);
+    pool->procs[n].pid = 0;
     LOG_POOL(TCPS_LOG_NOTICE, ("Process %u killed", n));
 
     return TCPS_OK;
@@ -519,7 +532,7 @@ static tcps_err_t tcps_pool_get_pnum(tcps_pool_proc_status_t pstatus,
     uint i;
 
     /* Check received parameters. */
-    if((pstatus > tcps_pool_proc_status_working) || (pnum == NULL)) {
+    if(pnum == NULL) {
         LOG_POOL(TCPS_LOG_EMERG, ("Invalid received parameters"));
         return TCPS_ERR_RECV_PARAMS;
     }
@@ -541,14 +554,13 @@ static tcps_err_t tcps_pool_get_pnum(tcps_pool_proc_status_t pstatus,
 /*----------------------------------------------------------------------------*/
 
 /*----------------------------------------------------------------------------*/
-void tcps_pool_set_process_status(pid_t pid, tcps_pool_proc_status_t pstatus)
+static void tcps_pool_set_process_status(pid_t pid,
+                                         tcps_pool_proc_status_t pstatus)
 {
     uint i;
 
     /* Check received parameters. */
-    if((pid < 0) ||
-       ((pstatus != tcps_pool_proc_status_working) &&
-        (pstatus != tcps_pool_proc_status_idle))) {
+    if(pid < 0) {
         LOG_POOL(TCPS_LOG_EMERG, ("Invalid received parameters"));
         return;
     }
@@ -556,9 +568,9 @@ void tcps_pool_set_process_status(pid_t pid, tcps_pool_proc_status_t pstatus)
     /* Change process status. */
     LOG_POOL(TCPS_LOG_DEBUG, ("Changing process (pid=%d) status to: %u...",
                               pid, pstatus));
-    tcps_pool_lock_wait();
     for(i=0 ; i<TCPS_POOL_CLIENTS_MAX ; ++i) {
         if(pool->procs[i].pid == pid) {
+            tcps_pool_update_stats(pool->procs[i].status, pstatus);
             pool->procs[i].status = pstatus;
             LOG_POOL(TCPS_LOG_DEBUG, ("New process %u (pid=%d) status: %u...",
                                       i, pool->procs[i].pid,
@@ -567,6 +579,45 @@ void tcps_pool_set_process_status(pid_t pid, tcps_pool_proc_status_t pstatus)
         }
     }
     LOG_POOL(TCPS_LOG_ERR, ("Process (pid=%d) not found in the pool", pid));
+}
+/*----------------------------------------------------------------------------*/
+
+/*----------------------------------------------------------------------------*/
+static void tcps_pool_update_stats(tcps_pool_proc_status_t prev_status,
+                                   tcps_pool_proc_status_t new_status)
+{
+    /* Update poll statistics. */
+    if(prev_status == tcps_pool_proc_status_ninit) {
+        ++pool->anum;
+    } else if(prev_status == tcps_pool_proc_status_idle) {
+        --pool->inum;
+    } else if(prev_status == tcps_pool_proc_status_working) {
+        --pool->wnum;
+    }
+    if(new_status == tcps_pool_proc_status_ninit) {
+        --pool->anum;
+    } else if(new_status == tcps_pool_proc_status_idle) {
+        ++pool->inum;
+    } else if(new_status == tcps_pool_proc_status_working) {
+        ++pool->wnum;
+    }
+}
+/*----------------------------------------------------------------------------*/
+
+/*----------------------------------------------------------------------------*/
+void tcps_pool_update_process_status(pid_t pid, tcps_pool_proc_status_t pstatus)
+{
+    /* Check received parameters. */
+    if((pid < 0) ||
+       ((pstatus != tcps_pool_proc_status_idle) &&
+        (pstatus != tcps_pool_proc_status_working))) {
+        LOG_POOL(TCPS_LOG_EMERG, ("Invalid received parameters"));
+        return;
+    }
+
+    /* Change process status. */
+    tcps_pool_lock_wait();
+    tcps_pool_set_process_status(pid, pstatus);
     tcps_pool_lock_release();
 }
 /*----------------------------------------------------------------------------*/

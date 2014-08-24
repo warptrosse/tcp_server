@@ -43,10 +43,8 @@ int main(int argc, char *argv[])
 
     /* Handle signals.
      * SIGINT  = When the user types the INTR character (normally C-c).
-     * SIGKILL = Cause immediate program termination.
      * SIGTERM = Generic signal used to cause program termination. */
     signal(SIGINT, tcps_signal_handler);
-    signal(SIGKILL, tcps_signal_handler);
     signal(SIGTERM, tcps_signal_handler);
 
     /* Listen. */
@@ -77,6 +75,7 @@ int main(int argc, char *argv[])
  */
 void tcps_signal_handler(int signo)
 {
+    (void)signo;
     LOG_MAIN(TCPS_LOG_NOTICE, ("Signal received: %s (%d). Closing TCP server",
                                strsignal(signo), signo));
     tcps_close();
