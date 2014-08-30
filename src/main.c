@@ -22,8 +22,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-void tcps_signal_handler(int signo);
-void tcps_print_usage(const char* progname);
+static void tcps_signal_handler(int signo);
+static void tcps_print_usage(const char* progname);
 
 /*----------------------------------------------------------------------------*/
 int main(int argc, char *argv[])
@@ -45,7 +45,7 @@ int main(int argc, char *argv[])
      * SIGINT  = When the user types the INTR character (normally C-c).
      * SIGTERM = Generic signal used to cause program termination. */
     signal(SIGINT, tcps_signal_handler);
-    signal(SIGTERM, tcps_signal_handler);
+    signal(SIGTERM, NULL);
 
     /* Listen. */
     rc = tcps_listen(port, nclients);
@@ -73,7 +73,7 @@ int main(int argc, char *argv[])
  * Handle SIGINT signal.
  * @param[in] signo
  */
-void tcps_signal_handler(int signo)
+static void tcps_signal_handler(int signo)
 {
     (void)signo;
     LOG_MAIN(TCPS_LOG_NOTICE, ("Signal received: %s (%d). Closing TCP server",
@@ -88,7 +88,7 @@ void tcps_signal_handler(int signo)
  * Prints TCP Server command usage.
  * @param[in] progname Program name.
  */
-void tcps_print_usage(const char* progname)
+static void tcps_print_usage(const char* progname)
 {
     (void)fprintf(stderr, "usage: %s <port_number> <num_clients>\n", progname);
     exit(EXIT_FAILURE);

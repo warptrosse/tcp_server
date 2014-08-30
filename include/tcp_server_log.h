@@ -24,7 +24,7 @@
 /**
  * Enable log system.
  */
-/*#define TCPS_LOG_ENABLE*/
+#define TCPS_LOG_ENABLE
 
 /**
  * Enable modules log.
@@ -57,8 +57,7 @@
     TCPS_LOG_ERR     |                          \
     TCPS_LOG_WARNING |                          \
     TCPS_LOG_NOTICE  |                          \
-    TCPS_LOG_INFO    |                          \
-    TCPS_LOG_DEBUG
+    TCPS_LOG_INFO
 
 /**
  * Log message helpers.
@@ -66,19 +65,25 @@
  * @param[in] msg Message.
  */
 #ifdef TCPS_LOG_MOD_MAIN_ENABLE
-#define LOG_MAIN(lvl, msg) { if(lvl&(TCPS_LOG_LVL)) { printf msg; printf("\n"); } }
+#define LOG_MAIN(lvl, msg) {                                    \
+        if(lvl&(TCPS_LOG_LVL)) { printf msg; printf("\n"); }    \
+    }
 #else /* TCPS_LOG_MOD_MAIN_ENABLE */
 #define LOG_MAIN(lvl, msg)
 #endif /* TCPS_LOG_MOD_MAIN_ENABLE */
 
 #ifdef TCPS_LOG_MOD_SRV_ENABLE
-#define LOG_SRV(lvl, msg) { if(lvl&(TCPS_LOG_LVL)) { printf msg; printf("\n"); } }
+#define LOG_SRV(lvl, msg) {                                     \
+        if(lvl&(TCPS_LOG_LVL)) { printf msg; printf("\n"); }    \
+    }
 #else /* TCPS_LOG_MOD_SRV_ENABLE */
 #define LOG_SRV(lvl, msg)
 #endif /* TCPS_LOG_MOD_SRV_ENABLE */
 
 #ifdef TCPS_LOG_MOD_POOL_ENABLE
-#define LOG_POOL(lvl, msg) { if(lvl&(TCPS_LOG_LVL)) { printf msg; printf("\n"); } }
+#define LOG_POOL(lvl, msg) {                                    \
+        if(lvl&(TCPS_LOG_LVL)) { printf msg; printf("\n"); }    \
+    }
 #else /* TCPS_LOG_MOD_POOL_ENABLE */
 #define LOG_POOL(lvl, msg)
 #endif /* TCPS_LOG_MOD_POOL_ENABLE */

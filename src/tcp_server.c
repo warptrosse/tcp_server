@@ -244,28 +244,37 @@ void tcps_close(void)
 
     /* Wait for children to be destroyed. */
     LOG_SRV(TCPS_LOG_DEBUG, ("Waiting for children to be destroyed..."));
-    while(wait(NULL) > 0);
-    if(errno != ECHILD) {
-        LOG_SRV(TCPS_LOG_WARNING, ("Waiting children to be destroyed error: "
-                                   "%s (%d)", strerror(errno), errno));
-    }
+    do {
+        rc = wait(NULL);
+        if((rc == -1) && (errno != ECHILD)) {
+            LOG_SRV(TCPS_LOG_WARNING, ("Waiting children to be destroyed "
+                                       "error: %s (%d)",
+                                       strerror(errno), errno));
+        }
+    } while(rc > 0);
 
     /* Close processes controller. */
     if(srv.mptr != NULL) {
         LOG_SRV(TCPS_LOG_DEBUG, ("Closing processes controller..."));
+        rc = tcps_lock_release();
+        if(rc != TCPS_OK) {
+            LOG_SRV(TCPS_LOG_WARNING, ("Unable to release pthread mutex"));
+        }
         rc = pthread_mutex_destroy(srv.mptr);
         if(rc != 0) {
-            LOG_SRV(TCPS_LOG_WARNING, ("Unable to destroy pthread mutex: %d", rc));
+            LOG_SRV(TCPS_LOG_WARNING, ("Unable to destroy pthread mutex: %d",
+                                       rc));
         }
         rc = munmap(srv.mptr, sizeof(pthread_mutex_t));
         if(rc != 0) {
-            LOG_SRV(TCPS_LOG_WARNING, ("Unable to destroy share memory mapping: "
-                                       "%s (%d)", strerror(errno), errno));
+            LOG_SRV(TCPS_LOG_WARNING, ("Unable to destroy share memory "
+                                       "mapping: %s (%d)",
+                                       strerror(errno), errno));
         }
         rc = shm_unlink(TCPS_SM_OBJ_NAME);
         if(rc != 0) {
-            LOG_SRV(TCPS_LOG_WARNING, ("Unable to unlink share memory object: %d",
-                                       rc));
+            LOG_SRV(TCPS_LOG_WARNING, ("Unable to unlink share memory object: "
+                                       "%d", rc));
         }
     }
 
