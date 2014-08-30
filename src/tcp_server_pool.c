@@ -219,7 +219,8 @@ tcps_err_t tcps_pool_update(void)
 
     /* Pool update. */
     tcps_pool_lock_wait();
-    LOG_POOL(TCPS_LOG_INFO, ("POOL STATS: inum=%u ; wnum=%u ; anum=%u\n",
+    LOG_POOL(TCPS_LOG_INFO, ("POOL STATS: idle_num=%u ; working_num=%u ; "
+                             "active_num=%u",
                              pool->inum, pool->wnum, pool->anum));
 
     /* Do we need to add processes?. */

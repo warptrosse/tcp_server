@@ -19,7 +19,7 @@
 
 # COMPILER/LINKER
 CC=gcc
-CFLAGS+=-g -Werror -Wpedantic -Wall -Wextra
+CFLAGS+=-g -Werror -pedantic -Wall -Wextra
 LDFLAGS+=-pthread -lrt
 
 # OUTPUT
@@ -36,8 +36,8 @@ INCL_PATH=../include
 #### SOURCES ###################################################################
 
 # TCP_SERVER
-TCP_SERVER_SRC=$(SRC_PATH)/tcp_server_pool.c $(SRC_PATH)/tcp_server.c \
-	$(SRC_PATH)/main.c
+TCP_SERVER_SRC=$(SRC_PATH)/tcp_server_pool.c $(SRC_PATH)/tcp_server_cli.c \
+        $(SRC_PATH)/tcp_server.c $(SRC_PATH)/main.c
 
 # SOURCES
 SOURCES=$(TCP_SERVER_SRC)
