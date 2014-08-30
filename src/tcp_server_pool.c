@@ -63,11 +63,12 @@ typedef struct tcps_pool_cli
  */
 typedef struct tcps_pool
 {
-    uchar           anum;  /**< Number of currently preforked processes. */
-    uchar           inum;  /**< Number of idle processes in the pool. */
-    uchar           wnum;  /**< Number of working processes in the pool. */
-    tcps_pool_cli_t procs[TCPS_POOL_CLIENTS_MAX]; /**< Pool processes. */
-    pthread_mutex_t mutex; /**< This mutex is used control pool updates. */
+    uchar            anum;   /**< Number of currently preforked processes. */
+    uchar            inum;   /**< Number of idle processes in the pool. */
+    uchar            wnum;   /**< Number of working processes in the pool. */
+    tcps_pool_cli_t  procs[TCPS_POOL_CLIENTS_MAX]; /**< Pool processes. */
+    pthread_rwlock_t rwlock; /**< This rwlock object is used control the pool
+                                status. */
 } tcps_pool_t;
 static tcps_pool_t* pool;
 
@@ -92,10 +93,16 @@ static uchar tcps_pool_status = 0;
 static tcps_err_t tcps_pool_lock_init(void);
 
 /**
- * Lock pool controller.
+ * Lock pool controller (for reading).
  * @return TCPS_OK=>success | TCPS_*=>other status.
  */
-static tcps_err_t tcps_pool_lock_wait(void);
+static tcps_err_t tcps_pool_lock_wait_read(void);
+
+/**
+ * Lock pool controller (for writting).
+ * @return TCPS_OK=>success | TCPS_*=>other status.
+ */
+static tcps_err_t tcps_pool_lock_wait_write(void);
 
 /**
  * Unlock pool controller.
@@ -210,7 +217,8 @@ tcps_err_t tcps_pool_init(uchar numpfc, tcps_post_fork_fnc_t pff)
 tcps_err_t tcps_pool_update(void)
 {
     uint i;
-    uint n;
+    uint tofork;
+    uint tokill;
 
     /* Check pool status. */
     if(tcps_pool_status != 1) {
@@ -218,30 +226,36 @@ tcps_err_t tcps_pool_update(void)
     }
 
     /* Pool update. */
-    tcps_pool_lock_wait();
+    tofork = 0;
+    tokill = 0;
+    tcps_pool_lock_wait_read();
     LOG_POOL(TCPS_LOG_INFO, ("POOL STATS: idle_num=%u ; working_num=%u ; "
                              "active_num=%u",
                              pool->inum, pool->wnum, pool->anum));
 
     /* Do we need to add processes?. */
     if(pool->inum <= TCPS_POOL_CLIENTS_CONTROL_DELTA) {
-        n = (TCPS_POOL_CLIENTS_CONTROL_DELTA-pool->inum);
-        for(i=0 ; i<n ; ++i) {
-            if(tcps_pool_fork() != TCPS_OK) {
-                LOG_POOL(TCPS_LOG_CRIT, ("Unable to fork process"));
-            }
-        }
+        tofork = (TCPS_POOL_CLIENTS_CONTROL_DELTA-pool->inum);
 
         /* Do we need to kill processes?. */
     } else if(pool->inum > (3*TCPS_POOL_CLIENTS_CONTROL_DELTA)) {
-        n = (pool->inum-(3*TCPS_POOL_CLIENTS_CONTROL_DELTA));
-        for(i=0 ; i<n ; ++i) {
-            if(tcps_pool_kill() != TCPS_OK) {
-                LOG_POOL(TCPS_LOG_WARNING, ("Unable to kill process"));
-            }
-        }
+        tokill = (pool->inum-(3*TCPS_POOL_CLIENTS_CONTROL_DELTA));
     }
     tcps_pool_lock_release();
+
+    /* Fork new processes if necesary. */
+    for(i=0 ; i<tofork ; ++i) {
+        if(tcps_pool_fork() != TCPS_OK) {
+            LOG_POOL(TCPS_LOG_CRIT, ("Unable to fork process"));
+        }
+    }
+
+    /* Kill processes if necesary. */
+    for(i=0 ; i<tokill ; ++i) {
+        if(tcps_pool_kill() != TCPS_OK) {
+            LOG_POOL(TCPS_LOG_WARNING, ("Unable to kill process"));
+        }
+    }
 
     return TCPS_OK;
 }
@@ -262,7 +276,7 @@ tcps_err_t tcps_pool_close(void)
 
     /* Close processes. */
     LOG_POOL(TCPS_LOG_DEBUG, ("Closing processes..."));
-    tcps_pool_lock_wait();
+    tcps_pool_lock_wait_write();
     for(i=0 ; i<TCPS_POOL_CLIENTS_MAX ; ++i) {
         if(pool->procs[i].status == tcps_pool_proc_status_ninit) {
             continue;
@@ -283,9 +297,9 @@ tcps_err_t tcps_pool_close(void)
 
     /* Close pool controller. */
     LOG_POOL(TCPS_LOG_DEBUG, ("Closing processes controller..."));
-    rc = pthread_mutex_destroy(&pool->mutex);
+    rc = pthread_rwlock_destroy(&pool->rwlock);
     if(rc != 0) {
-        LOG_POOL(TCPS_LOG_WARNING, ("Unable to destroy pthread mutex: %d",
+        LOG_POOL(TCPS_LOG_WARNING, ("Unable to destroy pthread rwlock: %d",
                                     rc));
     }
     rc = munmap(pool, sizeof(tcps_pool_t));
@@ -311,9 +325,9 @@ tcps_err_t tcps_pool_close(void)
 /*----------------------------------------------------------------------------*/
 static tcps_err_t tcps_pool_lock_init(void)
 {
-    int                 smfd;
-    pthread_mutexattr_t mattr;
-    int                 rc;
+    int                   smfd;
+    pthread_rwlockattr_t rwattr;
+    int                   rc;
 
     /* If the shared memory object already exists, unlink it. */
     shm_unlink(TCPS_POOL_SM_OBJ_NAME);
@@ -363,39 +377,41 @@ static tcps_err_t tcps_pool_lock_init(void)
                                     "%s (%d)", strerror(errno), errno));
     }
 
-    /* Create pool controller mutex.
-     * PTHREAD_PROCESS_SHARED = permit a mutex to be operated upon by any thread
-     *                          that has access to the memory where the mutex is
-     *                          allocated, even if the mutex is allocated in
-     *                          memory that is shared by multiple processes. */
-    LOG_POOL(TCPS_LOG_DEBUG, ("Creating pool controler mutex..."));
-    rc = pthread_mutexattr_init(&mattr);
+    /* Create pool controller rwlock.
+
+     * PTHREAD_PROCESS_SHARED = permit a read-write lock to be operated upon by
+     *                          any thread that has access to the memory where
+     *                          the read-write lock is allocated, even if the
+     *                          read-write lock is allocated in memory that is
+     *                          shared by multiple processes. */
+    LOG_POOL(TCPS_LOG_DEBUG, ("Creating pool controler rwlock..."));
+    rc = pthread_rwlockattr_init(&rwattr);
     if(rc != 0) {
-        LOG_POOL(TCPS_LOG_EMERG, ("Could not create pthread mutex attribute: "
+        LOG_POOL(TCPS_LOG_EMERG, ("Could not create pthread rwlock attribute: "
                                   "%d", rc));
         return TCPS_ERR_POOL_SMEM_ATTR_CREATE;
     }
-    rc = pthread_mutexattr_setpshared(&mattr, PTHREAD_PROCESS_SHARED);
+    rc = pthread_rwlockattr_setpshared(&rwattr, PTHREAD_PROCESS_SHARED);
     if(rc != 0) {
-        LOG_POOL(TCPS_LOG_EMERG, ("Could not set pthread mutex attribute as "
+        LOG_POOL(TCPS_LOG_EMERG, ("Could not set pthread rwlock attribute as "
                                   "shared: %d", rc));
-        pthread_mutexattr_destroy(&mattr);
+        pthread_rwlockattr_destroy(&rwattr);
         return TCPS_ERR_POOL_SMEM_ATTR_SET;
     }
-    rc = pthread_mutex_init(&pool->mutex, &mattr);
+    rc = pthread_rwlock_init(&pool->rwlock, &rwattr);
     if(rc != 0) {
-        LOG_POOL(TCPS_LOG_EMERG, ("Could not initialize pthread mutex: %d",
+        LOG_POOL(TCPS_LOG_EMERG, ("Could not initialize pthread rwlock: %d",
                                   rc));
-        pthread_mutexattr_destroy(&mattr);
-        return TCPS_ERR_POOL_SMEM_MUTEX_INIT;
+        pthread_rwlockattr_destroy(&rwattr);
+        return TCPS_ERR_POOL_SMEM_RWLOCK_INIT;
     }
 
-    /* Close unneeded pthread mutex attribute. */
-    LOG_POOL(TCPS_LOG_DEBUG, ("Destroying unneeded pthread mutex "
+    /* Close unneeded pthread rwlock attribute. */
+    LOG_POOL(TCPS_LOG_DEBUG, ("Destroying unneeded pthread rwlock "
                               "attribute..."));
-    rc = pthread_mutexattr_destroy(&mattr);
+    rc = pthread_rwlockattr_destroy(&rwattr);
     if(rc != 0) {
-        LOG_POOL(TCPS_LOG_WARNING, ("Could not close pthread mutex attribute: "
+        LOG_POOL(TCPS_LOG_WARNING, ("Could not close pthread rwlock attribute: "
                                     "%d", rc));
     }
 
@@ -404,16 +420,33 @@ static tcps_err_t tcps_pool_lock_init(void)
 /*----------------------------------------------------------------------------*/
 
 /*----------------------------------------------------------------------------*/
-static tcps_err_t tcps_pool_lock_wait(void)
+static tcps_err_t tcps_pool_lock_wait_read(void)
 {
     int rc;
 
-    /* Lock pool controller mutex. */
-    rc = pthread_mutex_lock(&pool->mutex);
+    /* Lock pool controller rwlock. */
+    rc = pthread_rwlock_rdlock(&pool->rwlock);
     if(rc != 0) {
-        LOG_POOL(TCPS_LOG_EMERG, ("Could not lock pool controller mutex: "
-                                  "%d", rc));
-        return TCPS_ERR_POOL_SMEM_MUTEX_LOCK;
+        LOG_POOL(TCPS_LOG_EMERG, ("Could not lock pool controller rwlock "
+                                  "(read): %d", rc));
+        return TCPS_ERR_POOL_SMEM_RWLOCK_LOCK;
+    }
+
+    return TCPS_OK;
+}
+/*----------------------------------------------------------------------------*/
+
+/*----------------------------------------------------------------------------*/
+static tcps_err_t tcps_pool_lock_wait_write(void)
+{
+    int rc;
+
+    /* Lock pool controller rwlock. */
+    rc = pthread_rwlock_wrlock(&pool->rwlock);
+    if(rc != 0) {
+        LOG_POOL(TCPS_LOG_EMERG, ("Could not lock pool controller rwlock "
+                                  "(write): %d", rc));
+        return TCPS_ERR_POOL_SMEM_RWLOCK_LOCK;
     }
 
     return TCPS_OK;
@@ -425,12 +458,12 @@ static tcps_err_t tcps_pool_lock_release(void)
 {
     int rc;
 
-    /* Unlock pool controller mutex. */
-    rc = pthread_mutex_unlock(&pool->mutex);
+    /* Unlock pool controller rwlock. */
+    rc = pthread_rwlock_unlock(&pool->rwlock);
     if(rc != 0) {
-        LOG_POOL(TCPS_LOG_EMERG, ("Could not unlock pool controller mutex: "
+        LOG_POOL(TCPS_LOG_EMERG, ("Could not unlock pool controller rwlock: "
                                   "%d", rc));
-        return TCPS_ERR_POOL_SMEM_MUTEX_UNLOCK;
+        return TCPS_ERR_POOL_SMEM_RWLOCK_UNLOCK;
     }
 
     return TCPS_OK;
@@ -617,7 +650,7 @@ void tcps_pool_update_process_status(pid_t pid, tcps_pool_proc_status_t pstatus)
     }
 
     /* Change process status. */
-    tcps_pool_lock_wait();
+    tcps_pool_lock_wait_write();
     tcps_pool_set_process_status(pid, pstatus);
     tcps_pool_lock_release();
 }
