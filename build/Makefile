@@ -62,4 +62,4 @@ all:
 	$(CC) $(CFLAGS) $(HEADERS) $(OBJECTS) -o $(EXEC) $(LDFLAGS)
 
 clean:
-	rm -f *.o tcp_server
+	rm -f *.o $(EXEC)
