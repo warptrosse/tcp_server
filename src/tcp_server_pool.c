@@ -140,14 +140,6 @@ static tcps_err_t tcps_pool_get_pnum(tcps_pool_proc_status_t pstatus,
                                      uchar* pnum);
 
 /**
- * Set process status.
- * @param[in] pid Proces identifier.
- * @param[in] pstatus New process status.
- */
-static void tcps_pool_set_process_status(pid_t pid,
-                                         tcps_pool_proc_status_t pstatus);
-
-/**
  * Update pool statistics.
  * @param[in] prev_status Process previous status.
  * @param[in] new_status Process new status.
@@ -287,13 +279,11 @@ tcps_err_t tcps_pool_close(void)
                                      strerror(errno), errno));
             continue;
         }
-        tcps_pool_set_process_status(pool->procs[i].pid,
-                                     tcps_pool_proc_status_ninit);
         LOG_POOL(TCPS_LOG_NOTICE, ("Process %u killed", i));
     }
-    tcps_pool_lock_release();
     LOG_POOL(TCPS_LOG_NOTICE, ("Remaining processes after pool closed: %u",
                                pool->anum));
+    tcps_pool_lock_release();
 
     /* Close pool controller. */
     LOG_POOL(TCPS_LOG_DEBUG, ("Closing processes controller..."));
@@ -325,9 +315,9 @@ tcps_err_t tcps_pool_close(void)
 /*----------------------------------------------------------------------------*/
 static tcps_err_t tcps_pool_lock_init(void)
 {
-    int                   smfd;
+    int                  smfd;
     pthread_rwlockattr_t rwattr;
-    int                   rc;
+    int                  rc;
 
     /* If the shared memory object already exists, unlink it. */
     shm_unlink(TCPS_POOL_SM_OBJ_NAME);
@@ -378,7 +368,6 @@ static tcps_err_t tcps_pool_lock_init(void)
     }
 
     /* Create pool controller rwlock.
-
      * PTHREAD_PROCESS_SHARED = permit a read-write lock to be operated upon by
      *                          any thread that has access to the memory where
      *                          the read-write lock is allocated, even if the
@@ -481,6 +470,7 @@ static tcps_err_t tcps_pool_fork(void)
 
     /* The current number of active processes in the pool must not be higher
      * than TCPS_POOL_CLIENTS_MAX. */
+    tcps_pool_lock_wait_read();
     assert((pool->anum <= TCPS_POOL_CLIENTS_MAX));
 
     /* If the pool is full, skip. */
@@ -489,6 +479,7 @@ static tcps_err_t tcps_pool_fork(void)
                                     "full: %u", pool->anum));
         return TCPS_ERR_POOL_FULL;
     }
+    tcps_pool_lock_release();
 
     /* Get first uninitialized process. */
     rc = tcps_pool_get_pnum(tcps_pool_proc_status_ninit, &n);
@@ -502,8 +493,11 @@ static tcps_err_t tcps_pool_fork(void)
     pid = fork();
     if(pid > 0) { /* Parent. */
         /* Updating pool data. */
-        pool->procs[n].pid = pid;
-        tcps_pool_set_process_status(pid, tcps_pool_proc_status_idle);
+        tcps_pool_lock_wait_write();
+        pool->procs[n].pid    = pid;
+        pool->procs[n].status = tcps_pool_proc_status_idle;
+        tcps_pool_update_stats(tcps_pool_proc_status_ninit, tcps_pool_proc_status_idle);
+        tcps_pool_lock_release();
         LOG_POOL(TCPS_LOG_NOTICE, ("Process %u forked: pid=%d", n, pid));
     } else if(pid == 0) { /* Child. */
         tcps_pool_pff();
@@ -526,6 +520,7 @@ static tcps_err_t tcps_pool_kill(void)
 
     /* The current number of active processes in the pool must not be lower
      * than TCPS_POOL_CLIENTS_MIN. */
+    tcps_pool_lock_wait_read();
     assert((pool->anum >= TCPS_POOL_CLIENTS_MIN));
 
     /* If the pool is currently at minimum, skip. */
@@ -534,6 +529,7 @@ static tcps_err_t tcps_pool_kill(void)
                                     "at minimum: %u", pool->anum));
         return TCPS_ERR_POOL_MIN;
     }
+    tcps_pool_lock_release();
 
     /* Get first idle process. */
     rc = tcps_pool_get_pnum(tcps_pool_proc_status_idle, &n);
@@ -550,9 +546,6 @@ static tcps_err_t tcps_pool_kill(void)
                                  errno));
         return TCPS_ERR_POOL_KILL_FAIL;
     }
-    tcps_pool_set_process_status(pool->procs[n].pid,
-                                 tcps_pool_proc_status_ninit);
-    pool->procs[n].pid = 0;
     LOG_POOL(TCPS_LOG_NOTICE, ("Process %u killed", n));
 
     return TCPS_OK;
@@ -574,22 +567,24 @@ static tcps_err_t tcps_pool_get_pnum(tcps_pool_proc_status_t pstatus,
     /* Get process. */
     LOG_POOL(TCPS_LOG_DEBUG, ("Getting first process with status: %u...",
                               pstatus));
+    tcps_pool_lock_wait_read();
     for(i=0 ; i<TCPS_POOL_CLIENTS_MAX ; ++i) {
         if(pool->procs[i].status == pstatus) {
             LOG_POOL(TCPS_LOG_DEBUG, ("First process with status %u found: %u",
                                       pstatus, i));
             *pnum = i;
+            tcps_pool_lock_release();
             return TCPS_OK;
         }
     }
+    tcps_pool_lock_release();
 
     return TCPS_ERR_POOL_NINIT_NOT_FOUND;
 }
 /*----------------------------------------------------------------------------*/
 
 /*----------------------------------------------------------------------------*/
-static void tcps_pool_set_process_status(pid_t pid,
-                                         tcps_pool_proc_status_t pstatus)
+void tcps_pool_set_process_status(pid_t pid, tcps_pool_proc_status_t pstatus)
 {
     uint i;
 
@@ -602,16 +597,22 @@ static void tcps_pool_set_process_status(pid_t pid,
     /* Change process status. */
     LOG_POOL(TCPS_LOG_DEBUG, ("Changing process (pid=%d) status to: %u...",
                               pid, pstatus));
+    tcps_pool_lock_wait_write();
     for(i=0 ; i<TCPS_POOL_CLIENTS_MAX ; ++i) {
         if(pool->procs[i].pid == pid) {
             tcps_pool_update_stats(pool->procs[i].status, pstatus);
+            if(pstatus == tcps_pool_proc_status_ninit) {
+                pool->procs[i].pid = 0;
+            }
             pool->procs[i].status = pstatus;
             LOG_POOL(TCPS_LOG_DEBUG, ("New process %u (pid=%d) status: %u...",
                                       i, pool->procs[i].pid,
                                       pool->procs[i].status));
+            tcps_pool_lock_release();
             return;
         }
     }
+    tcps_pool_lock_release();
     LOG_POOL(TCPS_LOG_ERR, ("Process (pid=%d) not found in the pool", pid));
 }
 /*----------------------------------------------------------------------------*/
@@ -635,23 +636,5 @@ static void tcps_pool_update_stats(tcps_pool_proc_status_t prev_status,
     } else if(new_status == tcps_pool_proc_status_working) {
         ++pool->wnum;
     }
-}
-/*----------------------------------------------------------------------------*/
-
-/*----------------------------------------------------------------------------*/
-void tcps_pool_update_process_status(pid_t pid, tcps_pool_proc_status_t pstatus)
-{
-    /* Check received parameters. */
-    if((pid < 0) ||
-       ((pstatus != tcps_pool_proc_status_idle) &&
-        (pstatus != tcps_pool_proc_status_working))) {
-        LOG_POOL(TCPS_LOG_EMERG, ("Invalid received parameters"));
-        return;
-    }
-
-    /* Change process status. */
-    tcps_pool_lock_wait_write();
-    tcps_pool_set_process_status(pid, pstatus);
-    tcps_pool_lock_release();
 }
 /*----------------------------------------------------------------------------*/

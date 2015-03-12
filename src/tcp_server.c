@@ -433,7 +433,7 @@ static void tcps_client_handler(void)
     for(;;) {
         /* Wait for an new incoming connection. */
         LOG_SRV(TCPS_LOG_NOTICE, ("%d - Waiting for a client request...", pid));
-        tcps_pool_update_process_status(pid, tcps_pool_proc_status_idle);
+        tcps_pool_set_process_status(pid, tcps_pool_proc_status_idle);
         tcps_lock_wait();
         clilen = sizeof(cliaddr);
         connfd = accept(srv.listenfd, (struct sockaddr*)&cliaddr, &clilen);
@@ -445,7 +445,7 @@ static void tcps_client_handler(void)
             continue;
         }
         tcps_lock_release();
-        tcps_pool_update_process_status(pid, tcps_pool_proc_status_working);
+        tcps_pool_set_process_status(pid, tcps_pool_proc_status_working);
         LOG_SRV(TCPS_LOG_NOTICE, ("%d - Request from client received => "
                                   "addr: %u port: %u", pid,
                                   cliaddr.sin_addr.s_addr, cliaddr.sin_port));
@@ -472,9 +472,9 @@ static void tcps_client_handler(void)
 static void tcps_client_signal_handler(int signo)
 {
     (void)signo;
-    LOG_SRV(TCPS_LOG_NOTICE, ("Signal received: %s (%d). Closing TCP server",
+    LOG_SRV(TCPS_LOG_NOTICE, ("Signal received: %s (%d). Closing TCP client",
                               strsignal(signo), signo));
-    tcps_pool_update_process_status(getpid(), tcps_pool_proc_status_ninit);
+    tcps_pool_set_process_status(getpid(), tcps_pool_proc_status_ninit);
     exit(EXIT_SUCCESS);
 }
 /*----------------------------------------------------------------------------*/

@@ -57,12 +57,10 @@ tcps_err_t tcps_pool_update(void);
 tcps_err_t tcps_pool_close(void);
 
 /**
- * Update process status.
+ * Set process status.
  * @param[in] pid Proces identifier.
- * @param[in] pstatus New process status. Two status are allowed:
- *  tcps_pool_proc_status_idle and tcps_pool_proc_status_working.
+ * @param[in] pstatus New process status.
  */
-void tcps_pool_update_process_status(pid_t pid,
-                                     tcps_pool_proc_status_t pstatus);
+void tcps_pool_set_process_status(pid_t pid, tcps_pool_proc_status_t pstatus);
 
 #endif /* _TCP_SERVER_POOL_H_ */
