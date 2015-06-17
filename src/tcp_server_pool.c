@@ -546,6 +546,8 @@ static tcps_err_t tcps_pool_kill(void)
                                  errno));
         return TCPS_ERR_POOL_KILL_FAIL;
     }
+    tcps_pool_set_process_status(pool->procs[n].pid,
+                                 tcps_pool_proc_status_ninit);
     LOG_POOL(TCPS_LOG_NOTICE, ("Process %u killed", n));
 
     return TCPS_OK;

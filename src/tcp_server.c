@@ -474,7 +474,6 @@ static void tcps_client_signal_handler(int signo)
     (void)signo;
     LOG_SRV(TCPS_LOG_NOTICE, ("Signal received: %s (%d). Closing TCP client",
                               strsignal(signo), signo));
-    tcps_pool_set_process_status(getpid(), tcps_pool_proc_status_ninit);
     exit(EXIT_SUCCESS);
 }
 /*----------------------------------------------------------------------------*/
