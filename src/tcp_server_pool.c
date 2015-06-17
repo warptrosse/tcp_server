@@ -273,12 +273,16 @@ tcps_err_t tcps_pool_close(void)
         if(pool->procs[i].status == tcps_pool_proc_status_ninit) {
             continue;
         }
-        if(kill(pool->procs[i].pid, SIGTERM) != 0) {
+        if(kill(pool->procs[i].pid, SIGUSR1) != 0) {
             LOG_POOL(TCPS_LOG_CRIT, ("Could not kill process %u: pid=%d ; "
                                      "%s (%d)", i, pool->procs[i].pid,
                                      strerror(errno), errno));
             continue;
         }
+        tcps_pool_update_stats(pool->procs[i].status,
+                               tcps_pool_proc_status_ninit);
+        pool->procs[i].pid    = 0;
+        pool->procs[i].status = tcps_pool_proc_status_ninit;
         LOG_POOL(TCPS_LOG_NOTICE, ("Process %u killed", i));
     }
     LOG_POOL(TCPS_LOG_NOTICE, ("Remaining processes after pool closed: %u",
@@ -540,7 +544,7 @@ static tcps_err_t tcps_pool_kill(void)
     }
 
     /* Kill a process. */
-    if(kill(pool->procs[n].pid, SIGTERM) != 0) {
+    if(kill(pool->procs[n].pid, SIGUSR1) != 0) {
         LOG_POOL(TCPS_LOG_CRIT, ("Could not kill process %u: pid=%d ; %s (%d)",
                                  n, pool->procs[n].pid, strerror(errno),
                                  errno));

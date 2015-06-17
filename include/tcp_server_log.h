@@ -19,7 +19,10 @@
  * @file tcp_server_log.h
  */
 
+#include "tcp_server_types.h"
 #include <stdio.h>
+#include <unistd.h>
+#include <time.h>
 
 /**
  * Enable log system.
@@ -66,7 +69,10 @@
  */
 #ifdef TCPS_LOG_MOD_MAIN_ENABLE
 #define LOG_MAIN(lvl, msg) {                                    \
-        if(lvl&(TCPS_LOG_LVL)) { printf msg; printf("\n"); }    \
+        if(lvl&(TCPS_LOG_LVL)) {                                \
+            printf("%u|%d|", (uint)time(NULL), getpid());       \
+            printf msg; printf("\n");                           \
+        }                                                       \
     }
 #else /* TCPS_LOG_MOD_MAIN_ENABLE */
 #define LOG_MAIN(lvl, msg)
@@ -74,7 +80,10 @@
 
 #ifdef TCPS_LOG_MOD_SRV_ENABLE
 #define LOG_SRV(lvl, msg) {                                     \
-        if(lvl&(TCPS_LOG_LVL)) { printf msg; printf("\n"); }    \
+        if(lvl&(TCPS_LOG_LVL)) {                                \
+            printf("%u|%d|", (uint)time(NULL), getpid());       \
+            printf msg; printf("\n");                           \
+        }                                                       \
     }
 #else /* TCPS_LOG_MOD_SRV_ENABLE */
 #define LOG_SRV(lvl, msg)
@@ -82,7 +91,10 @@
 
 #ifdef TCPS_LOG_MOD_POOL_ENABLE
 #define LOG_POOL(lvl, msg) {                                    \
-        if(lvl&(TCPS_LOG_LVL)) { printf msg; printf("\n"); }    \
+        if(lvl&(TCPS_LOG_LVL)) {                                \
+            printf("%u|%d|", (uint)time(NULL), getpid());       \
+            printf msg; printf("\n");                           \
+        }                                                       \
     }
 #else /* TCPS_LOG_MOD_POOL_ENABLE */
 #define LOG_POOL(lvl, msg)

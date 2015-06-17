@@ -137,8 +137,8 @@ tcps_err_t tcps_listen(ushort port, uchar nclients)
     reuse = 1;
     if(setsockopt(srv.listenfd, SOL_SOCKET, SO_REUSEADDR, &reuse,
                   sizeof(reuse)) != 0) {
-        LOG_SRV(TCPS_LOG_EMERG, ("Unable to set address as reusable: "
-                                 "%s (%d)", strerror(errno), errno));
+        LOG_SRV(TCPS_LOG_EMERG, ("Unable to set address as reusable: %s (%d)",
+                                 strerror(errno), errno));
         return TCPS_ERR_SET_ADDR_REUSABLE;
     }
 
@@ -256,10 +256,6 @@ void tcps_close(void)
     /* Close processes controller. */
     if(srv.mptr != NULL) {
         LOG_SRV(TCPS_LOG_DEBUG, ("Closing processes controller..."));
-        rc = tcps_lock_release();
-        if(rc != TCPS_OK) {
-            LOG_SRV(TCPS_LOG_WARNING, ("Unable to release pthread mutex"));
-        }
         rc = pthread_mutex_destroy(srv.mptr);
         if(rc != 0) {
             LOG_SRV(TCPS_LOG_WARNING, ("Unable to destroy pthread mutex: %d",
@@ -358,6 +354,13 @@ static tcps_err_t tcps_lock_init(void)
         pthread_mutexattr_destroy(&mattr);
         return TCPS_ERR_SMEM_ATTR_SET;
     }
+    rc = pthread_mutexattr_setrobust(&mattr, PTHREAD_MUTEX_ROBUST);
+    if(rc != 0) {
+        LOG_SRV(TCPS_LOG_EMERG, ("Could not set pthread mutex attribute as "
+                                 "shared: %d", rc));
+        pthread_mutexattr_destroy(&mattr);
+        return TCPS_ERR_SMEM_ATTR_SET;
+    }
     rc = pthread_mutex_init(srv.mptr, &mattr);
     if(rc != 0) {
         LOG_SRV(TCPS_LOG_EMERG, ("Could not initialize pthread mutex: %d",
@@ -385,7 +388,18 @@ static tcps_err_t tcps_lock_wait(void)
 
     /* Lock processes controller mutex. */
     rc = pthread_mutex_lock(srv.mptr);
-    if(rc != 0) {
+    if(rc == EOWNERDEAD) {
+        /* Owner of the robust mutex terminated while holding the mutex.
+         * Marking it as consistent again. */
+        rc = pthread_mutex_consistent(srv.mptr);
+        if(rc != 0) {
+            LOG_SRV(TCPS_LOG_ALERT, ("Could not recovery mutex: %d", rc));
+            return TCPS_ERR_SMEM_MUTEX_LOCK;
+        }
+    } else if(rc == ENOTRECOVERABLE) {
+        LOG_SRV(TCPS_LOG_ALERT, ("Mutex not recoverable: %d", rc));
+        return TCPS_ERR_SMEM_MUTEX_LOCK;
+    } else if(rc != 0) {
         LOG_SRV(TCPS_LOG_EMERG, ("Could not lock processes controller mutex: "
                                  "%d", rc));
         return TCPS_ERR_SMEM_MUTEX_LOCK;
@@ -418,51 +432,44 @@ static void tcps_client_handler(void)
     struct sockaddr_in cliaddr;
     socklen_t          clilen;
     int                connfd;
-    pid_t              pid;
 
     /* Set signal handlers.
      * SIGINT  = When the user types the INTR character (normally C-c).
      * SIGTERM = Generic signal used to cause program termination. */
     signal(SIGINT, NULL);
+    signal(SIGUSR1, tcps_client_signal_handler);
     signal(SIGTERM, tcps_client_signal_handler);
-
-    /* Get process indetifier. */
-    pid = getpid();
 
     /* Handle new connections. */
     for(;;) {
         /* Wait for an new incoming connection. */
-        LOG_SRV(TCPS_LOG_NOTICE, ("%d - Waiting for a client request...", pid));
-        tcps_pool_set_process_status(pid, tcps_pool_proc_status_idle);
+        LOG_SRV(TCPS_LOG_NOTICE, ("Waiting for a client request..."));
+        tcps_pool_set_process_status(getpid(), tcps_pool_proc_status_idle);
         tcps_lock_wait();
         clilen = sizeof(cliaddr);
         connfd = accept(srv.listenfd, (struct sockaddr*)&cliaddr, &clilen);
         if(connfd < 0) {
-            LOG_SRV(TCPS_LOG_ERR, ("%d - Unable to establish connection with "
-                                   "client: %s (%d)", pid,
-                                   strerror(errno), errno));
+            LOG_SRV(TCPS_LOG_ERR, ("Unable to establish connection with client: "
+                                   "%s (%d)", strerror(errno), errno));
             tcps_lock_release();
             continue;
         }
         tcps_lock_release();
-        tcps_pool_set_process_status(pid, tcps_pool_proc_status_working);
-        LOG_SRV(TCPS_LOG_NOTICE, ("%d - Request from client received => "
-                                  "addr: %u port: %u", pid,
+        tcps_pool_set_process_status(getpid(), tcps_pool_proc_status_working);
+        LOG_SRV(TCPS_LOG_NOTICE, ("Request from client received => "
+                                  "addr: %u port: %u",
                                   cliaddr.sin_addr.s_addr, cliaddr.sin_port));
 
         /* Process request. */
         if(tcps_client_process_request(connfd) != TCPS_OK) {
-            LOG_SRV(TCPS_LOG_ERR, ("%d - Could not process client request",
-                                   pid));
+            LOG_SRV(TCPS_LOG_ERR, ("Could not process client request"));
         }
 
         /* Terminate connection with client. */
-        LOG_SRV(TCPS_LOG_NOTICE, ("%d - Terminating connection with client...",
-                                  pid));
+        LOG_SRV(TCPS_LOG_NOTICE, ("Terminating connection with client..."));
         if(close(connfd) != 0) {
-            LOG_SRV(TCPS_LOG_ERR, ("%d - Unable to close connection with "
-                                   "client: %s (%d)", pid,
-                                   strerror(errno), errno));
+            LOG_SRV(TCPS_LOG_ERR, ("Unable to close connection with "
+                                   "client: %s (%d)", strerror(errno), errno));
         }
     }
 }
@@ -474,6 +481,9 @@ static void tcps_client_signal_handler(int signo)
     (void)signo;
     LOG_SRV(TCPS_LOG_NOTICE, ("Signal received: %s (%d). Closing TCP client",
                               strsignal(signo), signo));
+    if(signo == SIGTERM) {
+        tcps_pool_set_process_status(getpid(), tcps_pool_proc_status_ninit);
+    }
     exit(EXIT_SUCCESS);
 }
 /*----------------------------------------------------------------------------*/

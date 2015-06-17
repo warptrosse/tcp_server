@@ -145,15 +145,10 @@ tcps_err_t tcps_client_process_request(int connfd)
     char    outbuf[TCPS_CLIENT_OUT_BUFFER_MAXLEN];
     ssize_t outlen;
     ssize_t writelen;
-    pid_t   pid;
-
-    /* Get process identifier. */
-    pid = getpid();
-    (void)pid;
 
     /* Check received parameters. */
     if(connfd < 0) {
-        LOG_SRV(TCPS_LOG_ERR, ("%d - Invalid received parameters", pid));
+        LOG_SRV(TCPS_LOG_ERR, ("Invalid received parameters"));
         return TCPS_ERR_RECV_PARAMS;
     }
 
@@ -162,28 +157,27 @@ tcps_err_t tcps_client_process_request(int connfd)
     memset(outbuf, 0, sizeof(outbuf));
 
     /* Read request. */
-    LOG_SRV(TCPS_LOG_DEBUG, ("%d - Reading request...", pid));
+    LOG_SRV(TCPS_LOG_DEBUG, ("Reading request..."));
     inlen = tcps_client_read(connfd, inbuf, TCPS_CLIENT_IN_BUFFER_MAXLEN);
     if(inlen <= 0) {
-        LOG_SRV(TCPS_LOG_ERR, ("%d - Could not read the request", pid));
+        LOG_SRV(TCPS_LOG_ERR, ("Could not read the request"));
         return TCPS_ERR_CLIENT_REQ_READ;
     }
-    LOG_SRV(TCPS_LOG_NOTICE, ("%d - Request read: len=%d", pid, (int)inlen));
+    LOG_SRV(TCPS_LOG_NOTICE, ("Request read: len=%d", (int)inlen));
 
     /* Process request. */
     /* @todo */
     snprintf(outbuf, TCPS_CLIENT_OUT_BUFFER_MAXLEN, "%s", inbuf);
 
     /* Write response. */
-    LOG_SRV(TCPS_LOG_DEBUG, ("%d - Writing response...", pid));
+    LOG_SRV(TCPS_LOG_DEBUG, ("Writing response..."));
     writelen = strnlen(outbuf, TCPS_CLIENT_IN_BUFFER_MAXLEN);
     outlen   = tcps_client_write(connfd, outbuf, writelen);
     if(outlen != writelen) {
-        LOG_SRV(TCPS_LOG_ERR, ("%d - Could not write the response", pid));
+        LOG_SRV(TCPS_LOG_ERR, ("Could not write the response"));
         return TCPS_ERR_CLIENT_RESP_WRITE;
     }
-    LOG_SRV(TCPS_LOG_NOTICE, ("%d - Response written: len=%d",
-                              pid, (int)outlen));
+    LOG_SRV(TCPS_LOG_NOTICE, ("Response written: len=%d", (int)outlen));
 
     return TCPS_OK;
 }
