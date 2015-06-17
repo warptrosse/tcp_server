@@ -339,7 +339,13 @@ static tcps_err_t tcps_lock_init(void)
      * PTHREAD_PROCESS_SHARED = permit a mutex to be operated upon by any thread
      *                          that has access to the memory where the mutex is
      *                          allocated, even if the mutex is allocated in
-     *                          memory that is shared by multiple processes. */
+     *                          memory that is shared by multiple processes.
+     * PTHREAD_MUTEX_ROBUST   = If the process containing the owning thread of a
+     *                          robust mutex terminates while holding the mutex
+     *                          lock, the next thread that acquires the mutex
+     *                          shall be notified about the termination by the
+     *                          return value [EOWNERDEAD] from the locking
+     *                          function. */
     LOG_SRV(TCPS_LOG_DEBUG, ("Creating processes controler mutex..."));
     rc = pthread_mutexattr_init(&mattr);
     if(rc != 0) {
@@ -357,7 +363,7 @@ static tcps_err_t tcps_lock_init(void)
     rc = pthread_mutexattr_setrobust(&mattr, PTHREAD_MUTEX_ROBUST);
     if(rc != 0) {
         LOG_SRV(TCPS_LOG_EMERG, ("Could not set pthread mutex attribute as "
-                                 "shared: %d", rc));
+                                 "robust: %d", rc));
         pthread_mutexattr_destroy(&mattr);
         return TCPS_ERR_SMEM_ATTR_SET;
     }
